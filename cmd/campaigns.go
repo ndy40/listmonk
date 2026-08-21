@@ -371,6 +371,10 @@ func (a *App) UpdateCampaignStatus(c echo.Context) error {
 		return err
 	}
 
+	if req.Status == models.CampaignStatusRunning || req.Status == models.CampaignStatusScheduled {
+		a.manager.Wake()
+	}
+
 	// If the campaign is being stopped, send the signal to the manager to stop it in flight.
 	if req.Status == models.CampaignStatusPaused || req.Status == models.CampaignStatusCancelled {
 		a.manager.StopCampaign(id)
