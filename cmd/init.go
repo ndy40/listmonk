@@ -322,6 +322,7 @@ func initDB() *sqlx.DB {
 		Params      string        `koanf:"params"`
 		MaxOpen     int           `koanf:"max_open"`
 		MaxIdle     int           `koanf:"max_idle"`
+		MaxIdleTime time.Duration `koanf:"max_idle_time"`
 		MaxLifetime time.Duration `koanf:"max_lifetime"`
 	}
 	if err := ko.Unmarshal("db", &c); err != nil {
@@ -364,6 +365,10 @@ func initDB() *sqlx.DB {
 	db.SetMaxOpenConns(c.MaxOpen)
 	db.SetMaxIdleConns(c.MaxIdle)
 	db.SetConnMaxLifetime(c.MaxLifetime)
+
+	if c.MaxIdleTime > 0 {
+		db.SetConnMaxIdleTime(c.MaxIdleTime)
+	}
 
 	return db.Unsafe()
 }
@@ -593,6 +598,16 @@ func initCampaignManager(msgrs []manager.Messenger, q *models.Queries, u *UrlCon
 		lo.Println("running in passive mode. won't process campaigns.")
 	}
 
+	scanInterval := ko.Duration("app.campaign_scan_interval")
+	if scanInterval <= 0 {
+		scanInterval = time.Second * 5
+	}
+
+	maxScanInterval := ko.Duration("app.campaign_max_scan_interval")
+	if maxScanInterval < scanInterval {
+		maxScanInterval = time.Minute * 15
+	}
+
 	mgr := manager.New(manager.Config{
 		BatchSize:             ko.Int("app.batch_size"),
 		Concurrency:           ko.Int("app.concurrency"),
@@ -612,8 +627,9 @@ func initCampaignManager(msgrs []manager.Messenger, q *models.Queries, u *UrlCon
 		SlidingWindow:         ko.Bool("app.message_sliding_window"),
 		SlidingWindowDuration: ko.Duration("app.message_sliding_window_duration"),
 		SlidingWindowRate:     ko.Int("app.message_sliding_window_rate"),
-		ScanInterval:          time.Second * 5,
 		ScanCampaigns:         !ko.Bool("passive"),
+		ScanInterval:          scanInterval,
+		MaxScanInterval:       maxScanInterval,
 	}, newManagerStore(q, co, md), i, lo)
 
 	// Attach all messengers to the campaign manager.

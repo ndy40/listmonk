@@ -86,6 +86,7 @@ type Manager struct {
 	// Campaigns that are currently running.
 	pipes    map[int]*pipe
 	pipesMut sync.RWMutex
+	wakeCh   chan struct{}
 
 	tpls    map[int]*models.Template
 	tplsMut sync.RWMutex
@@ -150,7 +151,8 @@ type Config struct {
 	UnsubHeader           bool
 
 	// Interval to scan the DB for active campaign checkpoints.
-	ScanInterval time.Duration
+	ScanInterval    time.Duration
+	MaxScanInterval time.Duration
 
 	// ScanCampaigns indicates whether this instance of manager will scan the DB
 	// for active campaigns and process them.
@@ -184,6 +186,7 @@ func New(cfg Config, store Store, i *i18n.I18n, l *log.Logger) *Manager {
 		log:          l,
 		messengers:   make(map[string]Messenger),
 		pipes:        make(map[int]*pipe),
+		wakeCh:       make(chan struct{}, 1),
 		tpls:         make(map[int]*models.Template),
 		links:        make(map[string]string),
 		nextPipes:    make(chan *pipe, 1000),
@@ -194,6 +197,13 @@ func New(cfg Config, store Store, i *i18n.I18n, l *log.Logger) *Manager {
 	m.tplFuncs = m.makeGnericFuncMap()
 
 	return m
+}
+
+func (m *Manager) Wake() {
+	select {
+	case m.wakeCh <- struct{}{}:
+	default: // a wake is already queued
+	}
 }
 
 // AddMessenger adds a Messenger messaging backend to the manager.
@@ -447,16 +457,14 @@ func (m *Manager) Close() {
 // for campaigns to process and dispatches them to the manager. It feeds campaigns
 // into nextPipes.
 func (m *Manager) scanCampaigns(tick time.Duration) {
-	t := time.NewTicker(tick)
-	defer t.Stop()
+	cur := tick
 
 	// Periodically scan the data source for campaigns to process.
-	for range t.C {
+	for {
 		ids, counts := m.getCurrentCampaigns()
 		campaigns, err := m.store.NextCampaigns(ids, counts)
 		if err != nil {
 			m.log.Printf("error fetching campaigns: %v", err)
-			continue
 		}
 
 		for _, c := range campaigns {
@@ -480,6 +488,21 @@ func (m *Manager) scanCampaigns(tick time.Duration) {
 				p.Stop(false)
 				p.wg.Done()
 			}
+		}
+
+		if err != nil || (len(campaigns) == 0 && !m.HasRunningCampaigns()) {
+			cur *= 2
+			if cur > m.cfg.MaxScanInterval {
+				cur = m.cfg.MaxScanInterval
+			}
+		} else {
+			cur = tick
+		}
+
+		select {
+		case <-time.After(cur):
+		case <-m.wakeCh:
+			cur = tick
 		}
 	}
 }
